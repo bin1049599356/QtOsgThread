@@ -6,6 +6,7 @@
 #include <QWindow>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QThread>
 
 #include <osgDB/ReadFile>
 #include <osgViewer/Viewer>
@@ -25,10 +26,17 @@
 #include <osgGA/TrackballManipulator>
 
 #include <osg/Texture2D>
+#include <osgViewer/ViewerEventHandlers>
 
+#include <osgDB/WriteFile>
+#include <QElapsedTimer>
 #include <QOpenGLFunctions>
 #include <QOffscreenSurface>
 
+#include <native2qwindow.h>
+
+
+#include <osgViewer/api/Win32/PixelBufferWin32>
 //
 //USE_OSGPLUGIN(osg)
 //USE_OSGPLUGIN(osg2)
@@ -41,23 +49,69 @@
 class RenderCompleteCallback : public osg::Camera::DrawCallback
 {
 public:
-    RenderCompleteCallback(QtOSGWidget * w) : _widget(w){}
+    RenderCompleteCallback(QtOSGWidget * w, GLenum readBuffer) : _widget(w),
+        _readBuffer(readBuffer){}
     virtual void operator () (osg::RenderInfo& renderInfo) const
     {
+#if !defined(OSG_GLES1_AVAILABLE) && !defined(OSG_GLES2_AVAILABLE)
+        glReadBuffer(_readBuffer);
+#else
+        osg::notify(osg::NOTICE) << "Error: GLES unable to do glReadBuffer" << std::endl;
+#endif
+
+        OpenThreads::ScopedLock<OpenThreads::Mutex> lock(_widget->_mutex);
+        osg::GraphicsContext* gc = renderInfo.getState()->getGraphicsContext();
+        GLenum pixelFormat;
+        if (gc->getTraits())
+        {
+            if (gc->getTraits()->alpha)
+                pixelFormat = GL_RGBA;
+            else
+                pixelFormat = GL_RGB;
+
+#if defined(OSG_GLES1_AVAILABLE) || defined(OSG_GLES2_AVAILABLE)
+            if (pixelFormat == GL_RGB)
+            {
+                GLint value = 0;
+#ifndef GL_IMPLEMENTATION_COLOR_READ_FORMAT
+#define GL_IMPLEMENTATION_COLOR_READ_FORMAT 0x8B9B
+#endif
+                glGetIntegerv(GL_IMPLEMENTATION_COLOR_READ_FORMAT, &value);
+                if (value != GL_RGB ||
+                    value != GL_UNSIGNED_BYTE)
+                {
+                    pixelFormat = GL_RGBA;//always supported
+                }
+            }
+#endif
+            int width = gc->getTraits()->width;
+            int height = gc->getTraits()->height;
+
+            std::cout << "Capture: size=" << width << "x" << height << ", format=" << (pixelFormat == GL_RGBA ? "GL_RGBA" : "GL_RGB") << std::endl;
+
+            _widget->_image->readPixels(0, 0, width, height, pixelFormat, GL_UNSIGNED_BYTE);
+        }
+
+
+
         if (_widget->_needResize)
         {
-            if (renderInfo.getCurrentCamera())
-            {
-                renderInfo.getCurrentCamera()->resize(_widget->width() * _widget->m_scale,
-                    _widget->height() * _widget->m_scale,
-                    osg::Camera::RESIZE_PROJECTIONMATRIX | osg::Camera::RESIZE_DEFAULT);
-            }
-            _widget->_needResize = false;
+        //    if (renderInfo.getCurrentCamera())
+        //    {
+        //        renderInfo.getCurrentCamera()->resize(_widget->width() * _widget->m_scale,
+        //            _widget->height() * _widget->m_scale,
+        //            osg::Camera::RESIZE_PROJECTIONMATRIX | osg::Camera::RESIZE_DEFAULT);
+        //    }
+            //_widget->_needResize = false;
+
+        //    emit _widget->imageReady();
+            osgDB::writeImageFile(*_widget->_image, "E:\\test.jpg");
         }
     }
 
     void setWidget(QtOSGWidget* widget) { _widget = widget; }
 private:
+    GLenum                      _readBuffer;
     QtOSGWidget* _widget;
 };
     
@@ -66,47 +120,19 @@ QtOSGWidget::QtOSGWidget(QWidget* parent)
     , _mViewer(new osgViewer::Viewer)
     , m_scale(QApplication::desktop()->devicePixelRatio())
 {
-    connect(this, &QtOSGWidget::moveContext, this, &QtOSGWidget::onMoveContext, Qt::BlockingQueuedConnection);
-}
 
 
-QtOSGWidget::~QtOSGWidget() {
+    auto pStatsEventHandler = new osgViewer::StatsHandler; // 构造一视景器统计事件处理器
+    _mViewer->addEventHandler(pStatsEventHandler);
 
-}
-
-void QtOSGWidget::onMoveContext(QThread* th)
-{
-    _mGraphicsWindow->moveContext(th);
-}
-
-void QtOSGWidget::onImageReady()
-{
-
-}
-
-void QtOSGWidget::paintEvent(QPaintEvent* e)
-{
-    QOpenGLWidget::paintEvent(e);
-}
-
-void QtOSGWidget::resizeGL(int width, int height)
-{
-    this->getEventQueue()->windowResize(this->x() * m_scale, this->y() * m_scale, width * m_scale, height * m_scale, 0);
-    _mGraphicsWindow->resized(this->x() * m_scale, this->y() * m_scale, width * m_scale, height * m_scale);
-    osg::Camera* camera = _mViewer->getCamera();
-    camera->setViewport(0,0,this->width() * m_scale, this->height() * m_scale);
-
-    _needResize = true;
-}
-
-    
-void QtOSGWidget::initializeGL() {
-
+    //_mViewer->setUpViewInWindow(0, 0, width(), height());
     _mViewer->setThreadingModel(osgViewer::Viewer::SingleThreaded);
-    _mViewer->setThreadingModel(osgViewer::Viewer::DrawThreadPerContext);
+    _mViewer->setThreadingModel(osgViewer::Viewer::ThreadPerCamera);
+
 
 
     osg::Group* rootNode = new osg::Group();
+    osg::Group* showNode = new osg::Group();
 
     osg::Cylinder* cylinder = new osg::Cylinder();
     osg::ShapeDrawable* sd = new osg::ShapeDrawable(cylinder);
@@ -120,99 +146,185 @@ void QtOSGWidget::initializeGL() {
     stateSet->setAttributeAndModes(material, osg::StateAttribute::ON);
     stateSet->setMode(GL_DEPTH_TEST, osg::StateAttribute::ON);
 
+    osg::Matrix mat;
+    for (int i = 0; i < 10000; i++)
+    {
+        mat = osg::Matrix::translate(sin(i * 10) * 1, cos(i * 10) * 1, sin(i * 10) * 1) * osg::Matrix::rotate(0.1, osg::Vec3d(sin(i * 10) * 1, cos(i * 10) * 1, sin(i * 10) * 1));
+        osg::ref_ptr<osg::MatrixTransform> node = new osg::MatrixTransform;
+        node->addChild(geode);
+        node->setMatrix(mat);
 
-    osg::ref_ptr<osg::GraphicsContext::Traits> traits = new osg::GraphicsContext::Traits();
-    traits->x = this->x();
-    traits->y = this->y();
-    traits->width = this->width();
-    traits->height = this->height();
-    traits->doubleBuffer = true;
+        showNode->addChild(node);
+    }
+
+    _image = new osg::Image();
+    //_image->allocateImage(width(), height(), 1, GL_RGB, GL_UNSIGNED_BYTE);
+
+    const osg::BoundingSphere& bs = showNode->getBound();
+    if (!bs.valid())
+        return;
+    float aspectRatio = static_cast<float>(this->width()) / static_cast<float>(this->height());
+
+
+    setupCamera();
+
+    _camera->setClearColor(osg::Vec4(0.0f, 0.0f, 1.f, 1.f));
+    _camera->setProjectionMatrixAsPerspective(30.f, aspectRatio, 1.f, 1000.f);
+    _camera->setViewMatrixAsLookAt(bs.center() - osg::Vec3(0.0f, 100.0f, 0.0f) * bs.radius(), bs.center(), osg::Vec3(0.0f, 0.0f, 1.0f));
+
+    rootNode->addChild(showNode);
+
+    _mViewer->setSceneData(rootNode);
+    osgGA::TrackballManipulator* manipulator = new osgGA::TrackballManipulator;
+    manipulator->setDistance(100);
+    manipulator->setCenter(bs.center());
+    manipulator->setAllowThrow(false);
+    this->setMouseTracking(true);
+    _mViewer->setCameraManipulator(manipulator, false);
+    _mViewer->realize();
+
+    class WorkerThread : public QThread
+    {
+    public:
+        explicit WorkerThread(QObject* parent = nullptr) : QThread(parent), m_isStop(false) {}
+        void run() {
+            _w->render();
+            //_w->_mViewer->run();
+        }
+        void stop() { m_isStop = true; }
+
+        QtOSGWidget* _w;
+    private:
+        bool m_isStop;//停止标志位  
+    };
+
+    auto thread = new WorkerThread(this);
+    thread->_w = this;
+    thread->start(QThread::HighPriority);
+}
+
+
+QtOSGWidget::~QtOSGWidget() {
+
+}
+
+void QtOSGWidget::onImageReady()
+{
+    update();
+}
+
+void QtOSGWidget::paintEvent(QPaintEvent* e)
+{
+    QOpenGLWidget::paintEvent(e);
+}
+
+void QtOSGWidget::resizeGL(int width, int height)
+{
+    osg::Camera* camera = _mViewer->getCamera();
+    this->getEventQueue()->windowResize(this->x() * m_scale, this->y() * m_scale, width * m_scale, height * m_scale, 0);
+    camera->getGraphicsContext()->resized(this->x() * m_scale, this->y() * m_scale, width * m_scale, height * m_scale);
+    camera->setViewport(0,0,this->width() * m_scale, this->height() * m_scale);
+
+
+    _needResize = true;
+}
+
+
+int QtOSGWidget::setupCamera()
+{
+    osg::ref_ptr<osg::GraphicsContext::Traits> traits = new osg::GraphicsContext::Traits;
+    traits->readDISPLAY();
+    traits->setUndefinedScreenDetailsToDefaultScreen();
+    traits->width = width();
+    traits->height = height();
+    traits->pbuffer = true;
     traits->sampleBuffers = true;
     traits->samples = 8;
 
-    //_mGraphicsWindow = (new osgViewer::GraphicsWindowEmbedded(traits));
-    _mGraphicsWindow = (new QtGraphicsWindow(traits));
-    _mGraphicsWindow->_qglWidget = this;
-
-    osg::Camera* cameraOrg = new osg::Camera;
-    cameraOrg->setGraphicsContext(_mGraphicsWindow);
-    cameraOrg->setViewport(0, 0, width(), height());
-
-    const osg::BoundingSphere& bs = geode->getBound();
-    if (!bs.valid())
-        return ;
-    float aspectRatio = static_cast<float>(this->width()) / static_cast<float>(this->height());
-
-    if (_mViewer->getThreadingModel() != osgViewer::ViewerBase::ThreadingModel::SingleThreaded)
+    osg::ref_ptr<osg::GraphicsContext> pbuffer = osg::GraphicsContext::createGraphicsContext(traits.get());
+    if (pbuffer.valid())
     {
-        _camera = new osg::Camera;
-        _camera->setViewport(0, 0, this->width(), this->height());
-        _camera->setClearColor(osg::Vec4(0.0f, 0.0f, 1.f, 1.f));
-        _camera->setProjectionMatrixAsPerspective(30.f, aspectRatio, 1.f, 1000.f);
-        _camera->setViewMatrixAsLookAt(bs.center() - osg::Vec3(0.0f, 2.0f, 0.0f) * bs.radius(), bs.center(), osg::Vec3(0.0f, 0.0f, 1.0f));
+        osg::ref_ptr<osg::Camera> camera = new osg::Camera(*_mViewer->getCamera());
+        camera->setGraphicsContext(pbuffer.get());
+        camera->setViewport(new osg::Viewport(0, 0, traits->width, traits->height));
+        GLenum buffer = pbuffer->getTraits()->doubleBuffer ? GL_BACK : GL_FRONT;
+        camera->setDrawBuffer(buffer);
+        camera->setReadBuffer(buffer);
+        if(camera->getFinalDrawCallback() == nullptr)
+            camera->setFinalDrawCallback(new RenderCompleteCallback(this, buffer));
+        _camera = camera;
 
-        //_camera->setGraphicsContext(_mGraphicsWindow);
-
-
-        _camera->setRenderTargetImplementation(osg::Camera::FRAME_BUFFER_OBJECT);
-        _camera->setReferenceFrame(osg::Camera::ABSOLUTE_RF);
-        _camera->setRenderOrder(osg::Camera::PRE_RENDER);//最先渲染
-
-        osg::ref_ptr<osg::Texture2D> colorTexture = new osg::Texture2D;
-        //colorTexture->setTextureSize(width(), height());
-        //colorTexture->setInternalFormat(GL_RGBA);
-        //if (false)
-        //{
-        _image = new osg::Image();
-        _image->allocateImage(width(), height(), 1, GL_RGB, GL_UNSIGNED_BYTE);
-        _camera->attach(osg::Camera::COLOR_BUFFER, _image.get(), 8);
-
-        _camera->addFinalDrawCallback(new RenderCompleteCallback(this));
-
-        //    colorTexture->setImage(0, _image);
-        //}
-        //else
-        //{
-        //    camera->attach(osg::Camera::COLOR_BUFFER, colorTexture, 0, 0, false, 0, 0);
-        //}
-
-
-        _camera->addChild(geode);
-        rootNode->addChild(_camera);
-    }
-    else
-    {
-        rootNode->addChild(geode);
-
-        cameraOrg->setClearColor(osg::Vec4(0.0f, 0.0f, 1.f, 1.f));
-        cameraOrg->setProjectionMatrixAsPerspective(30.f, aspectRatio, 1.f, 1000.f);
-        cameraOrg->setViewMatrixAsLookAt(bs.center() - osg::Vec3(0.0f, 2.0f, 0.0f) * bs.radius(), bs.center(), osg::Vec3(0.0f, 0.0f, 1.0f));
+        _mViewer->setCamera(_camera.get());
     }
 
-    _mViewer->setCamera(cameraOrg);
-    _mViewer->setSceneData(rootNode);
-    osgGA::TrackballManipulator* manipulator = new osgGA::TrackballManipulator;
-    manipulator->setAllowThrow(false);
-    this->setMouseTracking(true);
-    _mViewer->setCameraManipulator(manipulator);
-    _mViewer->realize();
+    return 0;
+}
+    
+void QtOSGWidget::initializeGL() {
+
+    //std::thread th([&]() {
+    //    render();
+    //    }
+    //);
+
+    //th.detach();
 }
 
-#include <osgDB/WriteFile>
-void QtOSGWidget::paintGL() {
-    if(_mViewer->getThreadingModel() == osgViewer::Viewer::SingleThreaded)
-        _mViewer->frame();
-    else if (_mGraphicsWindow->isRealized())
+void QtOSGWidget::render()
+{
+    //m_renderContext->makeCurrent(context()->surface());
+
+    while (!_mViewer->done())
     {
-        _mViewer->getCameraManipulator()->updateCamera(*_camera);
+        QElapsedTimer  timer;
+        timer.start();
+
+        //if (_camera)
+        //    _mViewer->getCameraManipulator()->updateCamera(*_camera);
+
+        if (_needResize)
+        {
+            _mViewer->stopThreading();
+
+            setupCamera();
+            _mViewer->startThreading();
+
+            _needResize = false;
+        }
         _mViewer->frame();
+
+        qint64 elapsedTime = timer.elapsed();
+        qDebug() << "time one frame:" << elapsedTime << "ms";
+    }
+}
+
+void QtOSGWidget::paintGL() {
+
+    //QElapsedTimer  timer;
+    //timer.start();
+
+    //if(_mViewer->getThreadingModel() == osgViewer::Viewer::SingleThreaded)
+    //    _mViewer->frame();
+    //else if (_mGraphicsWindow->isRealized())
+    //{
+    //    _mViewer->getCameraManipulator()->updateCamera(*_camera);
+    //    _mViewer->frame();
+
+    //    QPainter p(this);
+    //    QImage img((const uchar*)_image->data(), _image->s(), _image->t(), _image->getRowSizeInBytes(), QImage::Format_RGB888);
+    //    img = img.mirrored(false, true);
+    //    p.drawImage(QRect(0, 0, width(), height()), img);
+    //    //osgDB::writeImageFile(*_image, "E:\\xxx.jpg");
+    //}
+
+    //qint64 elapsedTime = timer.elapsed();
+    //qDebug() << "time one frame:" << elapsedTime << "ms";
+    //return;
 
         QPainter p(this);
         QImage img((const uchar*)_image->data(), _image->s(), _image->t(), _image->getRowSizeInBytes(), QImage::Format_RGB888);
         img = img.mirrored(false, true);
         p.drawImage(QRect(0, 0, width(), height()), img);
-        //osgDB::writeImageFile(*_image, "E:\\xxx.jpg");
-    }
 }
     
 void QtOSGWidget::mouseMoveEvent(QMouseEvent* event)
@@ -280,77 +392,6 @@ bool QtOSGWidget::event(QEvent* event)
 }
 
 osgGA::EventQueue* QtOSGWidget::getEventQueue() const {
-    osgGA::EventQueue* eventQueue = _mGraphicsWindow->getEventQueue();
+    osgGA::EventQueue* eventQueue = _mViewer->getEventQueue();
     return eventQueue;
-}
-
-
-bool QtGraphicsWindow::valid() const 
-{
-    return true; 
-}
-bool QtGraphicsWindow::realizeImplementation()
-{ 
-    return true; 
-}
-bool QtGraphicsWindow::isRealizedImplementation() const
-{ 
-    return _realized;
-}
-void QtGraphicsWindow::closeImplementation()
-{
-
-}
-bool QtGraphicsWindow::makeCurrentImplementation() 
-{ 
-    _qglWidget->context();
-
-    QOpenGLContext* qglcx = _qglWidget->context();
-    if (qglcx->thread() != QThread::currentThread()) {
-        if (!qglcx->thread()) return true;//窗口关闭时
-        //这是在另一个线程中做得，需要让主线程来movetothread，需要用信号槽机制告诉主线程
-
-        emit _qglWidget->moveContext(QThread::currentThread());
-
-        _realized = true;
-        m_renderContext->makeCurrent(_qglWidget->context()->surface());
-    }
-    else {
-        _realized = true;
-        qglcx->makeCurrent(_qglWidget->context()->surface());
-    }
-
-    return true; 
-}
-bool QtGraphicsWindow::releaseContextImplementation() 
-{
-    return true; 
-}
-void QtGraphicsWindow::swapBuffersImplementation() 
-{
-
-}
-void QtGraphicsWindow::grabFocus() 
-{
-
-}
-void QtGraphicsWindow::grabFocusIfPointerInWindow() 
-{
-
-}
-void QtGraphicsWindow::raiseWindow() 
-{
-
-}
-
-void QtGraphicsWindow::moveContext(QThread* th)
-{
-    m_mainContext = _qglWidget->context();
-
-    m_renderContext = new QOpenGLContext;
-    m_renderContext->setFormat(m_mainContext->format());
-    m_renderContext->setShareContext(m_mainContext);
-    m_renderContext->create();
-    m_renderContext->moveToThread(th);
-
 }

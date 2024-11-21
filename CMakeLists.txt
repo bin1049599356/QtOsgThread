@@ -26,10 +26,27 @@ find_package(Qt5 COMPONENTS Core Gui Widgets OpenGL REQUIRED)
 add_definitions(-DOSG_USE_FLOAT_MATRIX)
 
 # 添加可执行文件，注意添加WIN32，否则有一个控制台黑框
+
+set(COMMON_SOURCE_FILES
+    main.cpp
+    QtOSGWidget.cpp
+    QtOSGWidget.h
+    native2qwindow.h
+)
+if(WIN32)
+    set(PLATFORM_SPECIFIC_SOURCE_FILES
+        native2qwindowWin32.cpp
+    )
+elseif(UNIX AND NOT APPLE)
+    set(PLATFORM_SPECIFIC_SOURCE_FILES
+        src/linux_specific_file1.cpp
+        native2qwindowX11.cpp
+    )
+endif()
+
 add_executable(QtOSGWidget
-main.cpp
-QtOSGWidget.cpp
-QtOSGWidget.h
+${COMMON_SOURCE_FILES}
+${PLATFORM_SPECIFIC_SOURCE_FILES}
 )
 
 
