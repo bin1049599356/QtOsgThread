@@ -33,10 +33,7 @@
 #include <QOpenGLFunctions>
 #include <QOffscreenSurface>
 
-#include <native2qwindow.h>
 
-
-#include <osgViewer/api/Win32/PixelBufferWin32>
 //
 //USE_OSGPLUGIN(osg)
 //USE_OSGPLUGIN(osg2)
@@ -87,15 +84,15 @@ public:
             int width = gc->getTraits()->width;
             int height = gc->getTraits()->height;
 
-            std::cout << "Capture: size=" << width << "x" << height << ", format=" << (pixelFormat == GL_RGBA ? "GL_RGBA" : "GL_RGB") << std::endl;
+            //std::cout << "Capture: size=" << width << "x" << height << ", format=" << (pixelFormat == GL_RGBA ? "GL_RGBA" : "GL_RGB") << std::endl;
 
             _widget->_image->readPixels(0, 0, width, height, pixelFormat, GL_UNSIGNED_BYTE);
         }
 
 
 
-        if (_widget->_needResize)
-        {
+        //if (_widget->_needResize)
+        //{
         //    if (renderInfo.getCurrentCamera())
         //    {
         //        renderInfo.getCurrentCamera()->resize(_widget->width() * _widget->m_scale,
@@ -105,8 +102,8 @@ public:
             //_widget->_needResize = false;
 
         //    emit _widget->imageReady();
-            osgDB::writeImageFile(*_widget->_image, "E:\\test.jpg");
-        }
+            //osgDB::writeImageFile(*_widget->_image, "E:\\test.jpg");
+        //}
     }
 
     void setWidget(QtOSGWidget* widget) { _widget = widget; }
@@ -300,8 +297,8 @@ void QtOSGWidget::render()
 
 void QtOSGWidget::paintGL() {
 
-    //QElapsedTimer  timer;
-    //timer.start();
+    QElapsedTimer  timer;
+    timer.start();
 
     //if(_mViewer->getThreadingModel() == osgViewer::Viewer::SingleThreaded)
     //    _mViewer->frame();
@@ -317,14 +314,15 @@ void QtOSGWidget::paintGL() {
     //    //osgDB::writeImageFile(*_image, "E:\\xxx.jpg");
     //}
 
-    //qint64 elapsedTime = timer.elapsed();
-    //qDebug() << "time one frame:" << elapsedTime << "ms";
     //return;
 
         QPainter p(this);
         QImage img((const uchar*)_image->data(), _image->s(), _image->t(), _image->getRowSizeInBytes(), QImage::Format_RGB888);
         img = img.mirrored(false, true);
         p.drawImage(QRect(0, 0, width(), height()), img);
+
+        qint64 elapsedTime = timer.elapsed();
+        qDebug() << "time paintGL frame:" << elapsedTime << "ms";
 }
     
 void QtOSGWidget::mouseMoveEvent(QMouseEvent* event)

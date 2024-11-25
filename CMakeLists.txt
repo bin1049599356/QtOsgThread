@@ -31,16 +31,12 @@ set(COMMON_SOURCE_FILES
     main.cpp
     QtOSGWidget.cpp
     QtOSGWidget.h
-    native2qwindow.h
 )
 if(WIN32)
     set(PLATFORM_SPECIFIC_SOURCE_FILES
-        native2qwindowWin32.cpp
     )
 elseif(UNIX AND NOT APPLE)
     set(PLATFORM_SPECIFIC_SOURCE_FILES
-        src/linux_specific_file1.cpp
-        native2qwindowX11.cpp
     )
 endif()
 
