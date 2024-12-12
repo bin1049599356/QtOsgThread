@@ -144,7 +144,8 @@ QtOSGWidget::QtOSGWidget(QWidget* parent)
     stateSet->setMode(GL_DEPTH_TEST, osg::StateAttribute::ON);
 
     osg::Matrix mat;
-    for (int i = 0; i < 10000; i++)
+    int modelNum = 1;
+    for (int i = 0; i < modelNum; i++)
     {
         mat = osg::Matrix::translate(sin(i * 10) * 1, cos(i * 10) * 1, sin(i * 10) * 1) * osg::Matrix::rotate(0.1, osg::Vec3d(sin(i * 10) * 1, cos(i * 10) * 1, sin(i * 10) * 1));
         osg::ref_ptr<osg::MatrixTransform> node = new osg::MatrixTransform;
@@ -160,11 +161,11 @@ QtOSGWidget::QtOSGWidget(QWidget* parent)
     const osg::BoundingSphere& bs = showNode->getBound();
     if (!bs.valid())
         return;
-    float aspectRatio = static_cast<float>(this->width()) / static_cast<float>(this->height());
 
 
     setupCamera();
 
+    float aspectRatio = static_cast<float>(_camera->getGraphicsContext()->getTraits()->width) / static_cast<float>(_camera->getGraphicsContext()->getTraits()->height);
     _camera->setClearColor(osg::Vec4(0.0f, 0.0f, 1.f, 1.f));
     _camera->setProjectionMatrixAsPerspective(30.f, aspectRatio, 1.f, 1000.f);
     _camera->setViewMatrixAsLookAt(bs.center() - osg::Vec3(0.0f, 100.0f, 0.0f) * bs.radius(), bs.center(), osg::Vec3(0.0f, 0.0f, 1.0f));
@@ -185,8 +186,8 @@ QtOSGWidget::QtOSGWidget(QWidget* parent)
     public:
         explicit WorkerThread(QObject* parent = nullptr) : QThread(parent), m_isStop(false) {}
         void run() {
-            _w->render();
-            //_w->_mViewer->run();
+            //_w->render();
+            _w->_mViewer->run();
         }
         void stop() { m_isStop = true; }
 
@@ -198,6 +199,9 @@ QtOSGWidget::QtOSGWidget(QWidget* parent)
     auto thread = new WorkerThread(this);
     thread->_w = this;
     thread->start(QThread::HighPriority);
+
+
+
 }
 
 
@@ -229,14 +233,22 @@ void QtOSGWidget::resizeGL(int width, int height)
 
 int QtOSGWidget::setupCamera()
 {
+    osg::GraphicsContext::WindowingSystemInterface* wsi = osg::GraphicsContext::getWindowingSystemInterface();
+    osg::GraphicsContext::ScreenSettings ss;
+    wsi->getScreenSettings(osg::GraphicsContext::ScreenIdentifier(0), ss);
+
     osg::ref_ptr<osg::GraphicsContext::Traits> traits = new osg::GraphicsContext::Traits;
     traits->readDISPLAY();
     traits->setUndefinedScreenDetailsToDefaultScreen();
-    traits->width = width();
-    traits->height = height();
     traits->pbuffer = true;
     traits->sampleBuffers = true;
     traits->samples = 8;
+
+    traits->width = ss.width;
+    traits->height = ss.height;
+
+    //traits->width = width();
+    //traits->height = height();
 
     osg::ref_ptr<osg::GraphicsContext> pbuffer = osg::GraphicsContext::createGraphicsContext(traits.get());
     if (pbuffer.valid())
@@ -316,13 +328,14 @@ void QtOSGWidget::paintGL() {
 
     //return;
 
+        OpenThreads::ScopedLock<OpenThreads::Mutex> lock(_mutex);
         QPainter p(this);
         QImage img((const uchar*)_image->data(), _image->s(), _image->t(), _image->getRowSizeInBytes(), QImage::Format_RGB888);
         img = img.mirrored(false, true);
         p.drawImage(QRect(0, 0, width(), height()), img);
 
         qint64 elapsedTime = timer.elapsed();
-        qDebug() << "time paintGL frame:" << elapsedTime << "ms";
+        //qDebug() << "time paintGL frame:" << elapsedTime << "ms";
 }
     
 void QtOSGWidget::mouseMoveEvent(QMouseEvent* event)
